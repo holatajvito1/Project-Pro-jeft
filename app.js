@@ -60,13 +60,23 @@ function distToSeg(p, a, b) {
 }
 
 /* ---------------- media ---------------- */
+// Video playback settings live on the media entry: paused, rate, sound.
+// Only the editor plays sound; the output window is always muted so audio isn't doubled.
+function applyVideoState(m) {
+  const v = m.el; if (!(v instanceof HTMLVideoElement)) return;
+  v.muted = isOutput || !m.sound;
+  v.playbackRate = m.rate || 1;
+  if (m.paused) { if (!v.paused) v.pause(); }
+  else if (v.paused) v.play().catch(() => { if (!v.muted) { v.muted = true; v.play().catch(() => {}); } });
+}
 function ensureMediaEl(m) {
   if (m.el) return m.el;
   if (m.type === 'video') {
     const v = document.createElement('video');
-    Object.assign(v, { src: m.url, loop: true, muted: true, playsInline: true, autoplay: true });
-    v.play().catch(() => {});
+    Object.assign(v, { src: m.url, loop: true, muted: true, playsInline: true, preload: 'auto' });
+    v.setAttribute('playsinline', '');
     m.el = v;
+    applyVideoState(m);
   } else {
     const img = new Image(); img.src = m.url; m.el = img;
   }
@@ -75,6 +85,82 @@ function ensureMediaEl(m) {
 function mediaReady(el) {
   return el instanceof HTMLVideoElement ? el.readyState >= 2 : el.complete && el.naturalWidth > 0;
 }
+function mediaSize(el) { return [el.videoWidth || el.naturalWidth, el.videoHeight || el.naturalHeight]; }
+
+/* ---------------- perspective warp (WebGL) ----------------
+ * Maps an image/video onto any 4-corner shape with true perspective, so a video
+ * lines up with a surface seen at an angle (corner pinning). */
+function squareToQuad(p) {        // homography: (0,0)->p0, (1,0)->p1, (1,1)->p2, (0,1)->p3
+  const [[x0, y0], [x1, y1], [x2, y2], [x3, y3]] = p;
+  const sx = x0 - x1 + x2 - x3, sy = y0 - y1 + y2 - y3;
+  let g = 0, h = 0;
+  if (Math.abs(sx) > 1e-9 || Math.abs(sy) > 1e-9) {
+    const dx1 = x1 - x2, dx2 = x3 - x2, dy1 = y1 - y2, dy2 = y3 - y2, den = dx1 * dy2 - dx2 * dy1;
+    g = (sx * dy2 - dx2 * sy) / den; h = (dx1 * sy - sx * dy1) / den;
+  }
+  return [x1 - x0 + g * x1, x3 - x0 + h * x3, x0, y1 - y0 + g * y1, y3 - y0 + h * y3, y0, g, h, 1];
+}
+function invert3(m) {
+  const [a, b, c, d, e, f, g, h, i] = m;
+  const A = e * i - f * h, B = -(d * i - f * g), C = d * h - e * g, det = a * A + b * B + c * C;
+  if (!det) return null;
+  return [A, -(b * i - c * h), b * f - c * e, B, a * i - c * g, -(a * f - c * d), C, -(a * h - b * g), a * e - b * d].map((v) => v / det);
+}
+const warp = (() => {
+  let gl = null, cvs, uHi, uH, failed = false;
+  const textures = new Map();          // element -> { tex, frame }
+  function init() {
+    cvs = document.createElement('canvas');
+    gl = cvs.getContext('webgl', { premultipliedAlpha: true, preserveDrawingBuffer: true });
+    if (!gl) { failed = true; return; }
+    const sh = (type, src) => { const s = gl.createShader(type); gl.shaderSource(s, src); gl.compileShader(s); return s; };
+    const prog = gl.createProgram();
+    gl.attachShader(prog, sh(gl.VERTEX_SHADER, 'attribute vec2 p;void main(){gl_Position=vec4(p,0.,1.);}'));
+    gl.attachShader(prog, sh(gl.FRAGMENT_SHADER, `precision highp float;uniform mat3 Hi;uniform float H;uniform sampler2D t;
+      void main(){vec3 q=Hi*vec3(gl_FragCoord.x,H-gl_FragCoord.y,1.);vec2 uv=q.xy/q.z;
+      if(q.z<=0.||uv.x<0.||uv.y<0.||uv.x>1.||uv.y>1.)discard;gl_FragColor=texture2D(t,uv);}`));
+    gl.linkProgram(prog);
+    if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) { failed = true; return; }
+    gl.useProgram(prog);
+    gl.bindBuffer(gl.ARRAY_BUFFER, gl.createBuffer());
+    gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 1, -1, -1, 1, -1, 1, 1, -1, 1, 1]), gl.STATIC_DRAW);
+    const loc = gl.getAttribLocation(prog, 'p');
+    gl.enableVertexAttribArray(loc); gl.vertexAttribPointer(loc, 2, gl.FLOAT, false, 0, 0);
+    uHi = gl.getUniformLocation(prog, 'Hi'); uH = gl.getUniformLocation(prog, 'H');
+    gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, true);
+    gl.clearColor(0, 0, 0, 0);
+  }
+  // Returns the canvas holding the warped image (same size as the stage), or null.
+  return function (el, quad, W, H, frameId, bb) {
+    if (!gl && !failed) init();
+    if (failed) return null;
+    if (cvs.width !== W || cvs.height !== H) { cvs.width = W; cvs.height = H; }
+    gl.viewport(0, 0, W, H);
+    let rec = textures.get(el);
+    if (!rec) {
+      const tex = gl.createTexture(); gl.bindTexture(gl.TEXTURE_2D, tex);
+      for (const [k, v] of [[gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE], [gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE], [gl.TEXTURE_MIN_FILTER, gl.LINEAR], [gl.TEXTURE_MAG_FILTER, gl.LINEAR]])
+        gl.texParameteri(gl.TEXTURE_2D, k, v);
+      rec = { tex, frame: -1 }; textures.set(el, rec);
+    }
+    gl.bindTexture(gl.TEXTURE_2D, rec.tex);
+    const isVideo = el instanceof HTMLVideoElement;
+    if (rec.frame === -1 || (isVideo && rec.frame !== frameId)) {
+      try { gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, el); } catch { return null; }
+      rec.frame = frameId;
+    }
+    const Hi = invert3(squareToQuad(quad));
+    if (!Hi) return null;
+    gl.disable(gl.SCISSOR_TEST); gl.clear(gl.COLOR_BUFFER_BIT);
+    gl.enable(gl.SCISSOR_TEST);
+    gl.scissor(Math.floor(bb.x), Math.floor(H - bb.y - bb.h), Math.ceil(bb.w) + 1, Math.ceil(bb.h) + 1);
+    gl.uniformMatrix3fv(uHi, false, [Hi[0], Hi[3], Hi[6], Hi[1], Hi[4], Hi[7], Hi[2], Hi[5], Hi[8]]);
+    gl.uniform1f(uH, H);
+    gl.drawArrays(gl.TRIANGLES, 0, 6);
+    return cvs;
+  };
+})();
+let frameId = 0;
 
 /* ---------------- rendering ---------------- */
 function resize() {
@@ -129,9 +215,26 @@ function paint(c, s, bb, b, pts, W) {
       const m = media[s.mediaId];
       const el = m && ensureMediaEl(m);
       if (el && mediaReady(el)) {
-        const iw = el.videoWidth || el.naturalWidth, ih = el.videoHeight || el.naturalHeight;
-        const sc = Math.max(w / iw, h / ih);                       // cover the shape
-        c.drawImage(el, x + (w - iw * sc) / 2, y + (h - ih * sc) / 2, iw * sc, ih * sc);
+        const [iw, ih] = mediaSize(el);
+        const fit = s.mediaFit || (pts.length === 4 ? 'warp' : 'cover');
+        let done = false;
+        if (fit === 'warp' && pts.length === 4) {
+          const sb = bbox(pts);
+          const g = warp(el, pts, c.canvas.width, c.canvas.height, frameId, sb);
+          if (g) {
+            const sx = Math.max(0, Math.floor(sb.x)), sy = Math.max(0, Math.floor(sb.y));
+            const sw = Math.min(c.canvas.width, Math.ceil(sb.x + sb.w) + 1) - sx, sh = Math.min(c.canvas.height, Math.ceil(sb.y + sb.h) + 1) - sy;
+            if (sw > 0 && sh > 0) c.drawImage(g, sx, sy, sw, sh, sx, sy, sw, sh);
+            done = true;
+          }
+        }
+        if (!done) {
+          if (fit === 'stretch') c.drawImage(el, x, y, w, h);
+          else {
+            const sc = fit === 'contain' ? Math.min(w / iw, h / ih) : Math.max(w / iw, h / ih);
+            c.drawImage(el, x + (w - iw * sc) / 2, y + (h - ih * sc) / 2, iw * sc, ih * sc);
+          }
+        }
       } else {                                                      // placeholder checkerboard
         const sz = W / 40;
         for (let i = 0; i * sz < w; i++) for (let j = 0; j * sz < h; j++) {
@@ -207,6 +310,7 @@ function drawTestGrid(c, W, H) {
 function beatNow() { return ((Date.now() - state.beatOrigin) / 1000) * (state.bpm / 60); }
 
 function frame() {
+  frameId++;
   resize();
   const W = canvas.width, H = canvas.height;
   ctx.setTransform(1, 0, 0, 1, 0, 0);
@@ -227,8 +331,19 @@ if (isOutput) {
     if (data.type === 'state') state = data.state;
     else if (data.type === 'audio') audioLevel = data.level;
     else if (data.type === 'media') {
-      for (const m of data.list) if (!media[m.id]) media[m.id] = { ...m };
+      for (const m of data.list) {
+        if (!media[m.id]) media[m.id] = { ...m };
+        else { Object.assign(media[m.id], { paused: m.paused, rate: m.rate }); applyVideoState(media[m.id]); }
+      }
       for (const id of Object.keys(media)) if (!data.list.some((m) => m.id === id)) delete media[id];
+    } else if (data.type === 'mediaCtl') {              // keep video time in step with the editor
+      const m = media[data.id]; if (!m) return;
+      Object.assign(m, { paused: data.paused, rate: data.rate });
+      const v = ensureMediaEl(m); applyVideoState(m);
+      if (!v.duration) return;
+      let target = data.time + (data.paused ? 0 : ((Date.now() - data.at) / 1000) * data.rate);
+      target %= v.duration;
+      if (Math.abs(v.currentTime - target) > 0.3) v.currentTime = target;
     }
   });
   chan?.postMessage({ type: 'hello' });
@@ -262,7 +377,11 @@ function initEditor() {
   /* ----- persistence + sync ----- */
   function broadcast() { chan?.postMessage({ type: 'state', state }); }
   function broadcastMedia() {
-    chan?.postMessage({ type: 'media', list: Object.values(media).map(({ id, name, type, url }) => ({ id, name, type, url })) });
+    chan?.postMessage({ type: 'media', list: Object.values(media).map(({ id, name, type, url, paused, rate }) => ({ id, name, type, url, paused, rate })) });
+  }
+  function sendMediaCtl(m) {
+    if (m.type !== 'video' || !m.el) return;
+    chan?.postMessage({ type: 'mediaCtl', id: m.id, paused: !!m.paused, rate: m.rate || 1, time: m.el.currentTime, at: Date.now() });
   }
   function changed({ panel = true } = {}) {
     broadcast();
@@ -297,6 +416,8 @@ function initEditor() {
     } catch { res(null); }
   });
   async function idbPut(rec) { const db = await idb; if (db) db.transaction('media', 'readwrite').objectStore('media').put(rec); }
+  async function idbDelete(id) { const db = await idb; if (db) db.transaction('media', 'readwrite').objectStore('media').delete(id); }
+  const saveMediaRec = (m) => idbPut({ id: m.id, name: m.name, type: m.type, blob: m.blob, paused: !!m.paused, rate: m.rate || 1, sound: !!m.sound });
   async function idbAll() {
     const db = await idb; if (!db) return [];
     return new Promise((res) => { const q = db.transaction('media').objectStore('media').getAll(); q.onsuccess = () => res(q.result); q.onerror = () => res([]); });
@@ -485,13 +606,15 @@ function initEditor() {
         <button class="eye" data-eye="${s.id}" title="Show / hide">${s.visible ? '●' : '○'}</button>
       </li>`).join('');
     $('emptyHint').hidden = state.shapes.length > 0;
+    markUsedMedia();
     const s = sel();
     $('props').hidden = !s;
     if (!s) return;
     $('mediaSelect').innerHTML = '<option value="">— none —</option>' +
       Object.values(media).map((m) => `<option value="${m.id}">${esc(m.name)}</option>`).join('');
     document.querySelectorAll('#props [data-prop]').forEach((el) => {
-      const k = el.dataset.prop, v = s[k];
+      const k = el.dataset.prop;
+      const v = k === 'mediaFit' ? s.mediaFit || (s.points.length === 4 ? 'warp' : 'cover') : s[k];
       if (el.type === 'checkbox') el.checked = !!v;
       else if (document.activeElement !== el) el.value = v ?? '';
     });
@@ -499,8 +622,107 @@ function initEditor() {
       const k = o.dataset.for, v = s[k];
       o.textContent = k === 'speed' ? `${v}×` : k === 'opacity' ? `${Math.round(v * 100)}%` : k === 'feather' ? v : (+v).toFixed(2);
     });
-    $('mediaRow').style.display = s.effect === 'media' ? '' : 'none';
+    const isMedia = s.effect === 'media';
+    $('mediaProps').style.display = isMedia ? '' : 'none';
+    const fit = s.mediaFit || (s.points.length === 4 ? 'warp' : 'cover');
+    $('warpHint').style.display = isMedia && fit === 'warp' ? '' : 'none';
+    $('warpHint').textContent = s.points.length === 4
+      ? 'Corners: 1 = top-left, 2 = top-right, 3 = bottom-right, 4 = bottom-left of the picture. Drag them onto the corners of your surface.'
+      : `Perspective needs exactly 4 points. This shape has ${s.points.length}, so the media fills it instead.`;
+    const m = media[s.mediaId];
+    $('videoCtl').style.display = isMedia && m && m.type === 'video' ? '' : 'none';
+    if (m && m.type === 'video') {
+      $('vPlay').textContent = m.paused ? '▶ Play' : '⏸ Pause';
+      $('vSound').textContent = m.sound ? '🔊 Sound on' : '🔇 Sound off';
+      $('vSound').classList.toggle('on', !!m.sound);
+      $('vRate').value = String(m.rate || 1);
+    }
   }
+
+  /* ----- media library ----- */
+  function renderMediaLib() {
+    const lib = $('mediaLib');
+    lib.innerHTML = Object.values(media).map((m) => `
+      <div class="thumb" data-mid="${m.id}" title="${esc(m.name)}">
+        ${m.type === 'video' ? `<video src="${m.url}#t=0.5" muted playsinline preload="metadata"></video>` : `<img src="${m.url}" alt="">`}
+        <span class="tag">${m.type === 'video' ? '▶ video' : 'image'}</span>
+        <button class="del" data-del="${m.id}" title="Remove from library">×</button>
+      </div>`).join('');
+    markUsedMedia();
+  }
+  function markUsedMedia() {
+    const s = sel();
+    document.querySelectorAll('#mediaLib .thumb').forEach((t) => t.classList.toggle('used', !!s && s.effect === 'media' && s.mediaId === t.dataset.mid));
+  }
+  function addMediaFiles(files) {
+    const added = [];
+    for (const file of files) {
+      if (!/^(image|video)\//.test(file.type)) continue;
+      const m = { id: uid(), name: file.name, type: file.type.startsWith('video') ? 'video' : 'image',
+        url: URL.createObjectURL(file), blob: file, paused: false, rate: 1, sound: false };
+      media[m.id] = m; saveMediaRec(m); added.push(m);
+    }
+    if (!added.length) { toast('Only image and video files can be added'); return []; }
+    renderMediaLib(); broadcastMedia();
+    toast(added.length === 1 ? `Added ${added[0].name}` : `Added ${added.length} files`);
+    return added;
+  }
+  // Put media on a shape; with no shape, make a new rectangle in the media's proportions.
+  function applyMedia(m, target = sel()) {
+    if (!target) {
+      const el = ensureMediaEl(m);
+      const place = () => {
+        const [iw, ih] = mediaReady(el) ? mediaSize(el) : [16, 9];
+        let w = innerWidth * 0.4, h = (w * ih) / iw;
+        if (h > innerHeight * 0.6) { h = innerHeight * 0.6; w = (h * iw) / ih; }
+        const x0 = (innerWidth - w) / 2 / innerWidth, y0 = (innerHeight - h) / 2 / innerHeight, x1 = x0 + w / innerWidth, y1 = y0 + h / innerHeight;
+        const s = newShape([[x0, y0], [x1, y0], [x1, y1], [x0, y1]], m.type === 'video' ? 'Video' : 'Image');
+        Object.assign(s, { effect: 'media', mediaId: m.id, mediaFit: 'warp' });
+        addShape(s);
+      };
+      if (mediaReady(el)) place();
+      else { let done = false; const go = () => { if (!done) { done = true; place(); } };
+        el.addEventListener(m.type === 'video' ? 'loadeddata' : 'load', go, { once: true }); setTimeout(go, 1500); }
+      return;
+    }
+    target.effect = 'media'; target.mediaId = m.id;
+    if (!target.mediaFit) target.mediaFit = target.points.length === 4 ? 'warp' : 'cover';
+    if (m.type === 'video') ensureMediaEl(m);
+    changed();
+  }
+  function deleteMedia(id) {
+    const m = media[id]; if (!m) return;
+    const users = state.shapes.filter((s) => s.mediaId === id);
+    if (users.length && !confirm(`${m.name} is used by ${users.length} shape(s). Remove it anyway?`)) return;
+    users.forEach((s) => { s.mediaId = null; });
+    if (m.el instanceof HTMLVideoElement) { m.el.pause(); m.el.removeAttribute('src'); m.el.load(); }
+    URL.revokeObjectURL(m.url); delete media[id]; idbDelete(id);
+    renderMediaLib(); broadcastMedia(); changed();
+  }
+  $('mediaLib').addEventListener('click', (e) => {
+    const del = e.target.closest('[data-del]');
+    if (del) { e.stopPropagation(); return deleteMedia(del.dataset.del); }
+    const t = e.target.closest('.thumb'); if (t) applyMedia(media[t.dataset.mid]);
+  });
+  const selMedia = () => { const s = sel(); return s && media[s.mediaId]; };
+  $('vPlay').onclick = () => { const m = selMedia(); if (!m) return; m.paused = !m.paused; ensureMediaEl(m); applyVideoState(m); saveMediaRec(m); sendMediaCtl(m); refreshPanel(); };
+  $('vRestart').onclick = () => { const m = selMedia(); if (!m) return; const v = ensureMediaEl(m); v.currentTime = 0; applyVideoState(m); sendMediaCtl(m); };
+  $('vSound').onclick = () => { const m = selMedia(); if (!m) return; m.sound = !m.sound; ensureMediaEl(m); applyVideoState(m); saveMediaRec(m); refreshPanel(); };
+  $('vRate').onchange = (e) => { const m = selMedia(); if (!m) return; m.rate = +e.target.value; applyVideoState(m); saveMediaRec(m); sendMediaCtl(m); };
+
+  // Drag and drop files onto the stage: they go onto the shape under the pointer.
+  let dragDepth = 0;
+  addEventListener('dragenter', (e) => { if (e.dataTransfer?.types.includes('Files')) { dragDepth++; document.body.classList.add('dropping'); } });
+  addEventListener('dragleave', () => { if (--dragDepth <= 0) { dragDepth = 0; document.body.classList.remove('dropping'); } });
+  addEventListener('dragover', (e) => { if (e.dataTransfer?.types.includes('Files')) e.preventDefault(); });
+  addEventListener('drop', (e) => {
+    e.preventDefault(); dragDepth = 0; document.body.classList.remove('dropping');
+    const added = addMediaFiles([...(e.dataTransfer?.files || [])]);
+    if (!added.length) return;
+    const hit = e.target === canvas ? hitShape(norm(e)) : null;
+    if (hit) { selectedId = hit.id; applyMedia(added[0], hit); }
+    else if (e.target === canvas) { selectedId = null; applyMedia(added[0], null); }
+  });
 
   $('shapeList').addEventListener('click', (e) => {
     const eye = e.target.closest('[data-eye]');
@@ -514,19 +736,16 @@ function initEditor() {
       const k = el.dataset.prop;
       s[k] = el.type === 'checkbox' ? el.checked : el.type === 'range' ? +el.value : el.value || (k === 'mediaId' ? null : el.value);
       if (k === 'effect' && s.effect === 'media' && !s.mediaId && Object.keys(media).length === 0) $('fileMedia').click();
+      if (k === 'mediaId' && s.mediaId && media[s.mediaId]) ensureMediaEl(media[s.mediaId]);
       changed();
     });
     if (el.type === 'color') el.addEventListener('input', () => { const s = sel(); if (s) { s[el.dataset.prop] = el.value; changed({ panel: false }); } });
   });
-  $('btnUpload').onclick = () => $('fileMedia').click();
+  document.querySelectorAll('.btnUpload').forEach((b) => (b.onclick = () => $('fileMedia').click()));
   $('fileMedia').onchange = (e) => {
-    const file = e.target.files[0]; e.target.value = '';
-    if (!file) return;
-    const m = { id: uid(), name: file.name, type: file.type.startsWith('video') ? 'video' : 'image', url: URL.createObjectURL(file) };
-    media[m.id] = m;
-    idbPut({ id: m.id, name: m.name, type: m.type, blob: file });
-    const s = sel(); if (s) { s.effect = 'media'; s.mediaId = m.id; }
-    broadcastMedia(); changed();
+    const files = [...e.target.files]; e.target.value = '';
+    const added = addMediaFiles(files);
+    if (added.length && sel()) applyMedia(added[0]);      // put the first one on the selected shape
   };
   $('btnUp').onclick = () => moveOrder(1);
   $('btnDown').onclick = () => moveOrder(-1);
@@ -663,15 +882,19 @@ function initEditor() {
   });
 
   /* ----- output window handshake ----- */
-  chan?.addEventListener('message', ({ data }) => { if (data.type === 'hello') { broadcastMedia(); broadcast(); } });
+  chan?.addEventListener('message', ({ data }) => {
+    if (data.type === 'hello') { broadcastMedia(); broadcast(); Object.values(media).forEach(sendMediaCtl); }
+  });
+  setInterval(() => Object.values(media).forEach(sendMediaCtl), 1000);
 
   /* ----- startup ----- */
   new ResizeObserver(([e]) => document.documentElement.style.setProperty('--top', e.target.offsetHeight + 'px')).observe($('topbar'));
   try { const saved = JSON.parse(localStorage.getItem('pm-state')); if (saved && Array.isArray(saved.shapes)) loadState(saved); } catch {}
   history.push(JSON.stringify(state.shapes));
   idbAll().then((recs) => {
-    for (const r of recs) media[r.id] = { id: r.id, name: r.name, type: r.type, url: URL.createObjectURL(r.blob) };
-    if (recs.length) { broadcastMedia(); refreshPanel(); }
+    for (const r of recs) media[r.id] = { id: r.id, name: r.name, type: r.type, url: URL.createObjectURL(r.blob),
+      blob: r.blob, paused: !!r.paused, rate: r.rate || 1, sound: !!r.sound };
+    if (recs.length) { renderMediaLib(); broadcastMedia(); refreshPanel(); }
   });
   refreshPanel();
   requestAnimationFrame(frame);

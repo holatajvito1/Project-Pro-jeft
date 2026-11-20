@@ -51,6 +51,13 @@
       <ul id="shapeList"></ul>
       <p class="hint" id="emptyHint">Pick a tool on the left and draw over the object you're projecting onto.</p>
     </section>
+    <section>
+      <h2>Media</h2>
+      <button class="btnUpload wide" title="Add images or videos from this device">＋ Add images / videos</button>
+      <input id="fileMedia" type="file" accept="image/*,video/*" multiple hidden>
+      <div id="mediaLib"></div>
+      <p class="hint" id="mediaHint">Tap a thumbnail to put it on the selected shape, or on a new one if nothing is selected. You can also drag files onto a shape.</p>
+    </section>
     <section id="props" hidden>
       <h2>Selected shape</h2>
       <label class="row">Name <input data-prop="name" type="text"></label>
@@ -59,13 +66,29 @@
         <label>Color A <input data-prop="colorA" type="color"></label>
         <label>Color B <input data-prop="colorB" type="color"></label>
       </div>
-      <label class="row" id="mediaRow">Media
-        <span class="inline">
-          <select data-prop="mediaId" id="mediaSelect"></select>
-          <button id="btnUpload" title="Add an image or video">+</button>
-        </span>
-      </label>
-      <input id="fileMedia" type="file" accept="image/*,video/*" hidden>
+      <div id="mediaProps">
+        <label class="row">Media
+          <span class="inline">
+            <select data-prop="mediaId" id="mediaSelect"></select>
+            <button class="btnUpload" title="Add images or videos">+</button>
+          </span>
+        </label>
+        <label class="row">Fit <select data-prop="mediaFit" id="fitSelect">
+          <option value="warp">Stretch to corners (perspective)</option>
+          <option value="cover">Fill shape (crop)</option>
+          <option value="contain">Fit inside shape</option>
+          <option value="stretch">Stretch to box</option>
+        </select></label>
+        <p class="hint" id="warpHint">Perspective needs a shape with exactly 4 points. Corner order: ① top-left, ② top-right, ③ bottom-right, ④ bottom-left.</p>
+        <div id="videoCtl" class="videoCtl">
+          <button id="vPlay" title="Play / pause">⏸ Pause</button>
+          <button id="vRestart" title="Restart from the beginning">⏮</button>
+          <button id="vSound" title="Play the video's sound from this device">🔇 Sound off</button>
+          <label>Speed <select id="vRate">
+            <option value="0.25">0.25×</option><option value="0.5">0.5×</option><option value="1">1×</option>
+            <option value="1.5">1.5×</option><option value="2">2×</option></select></label>
+        </div>
+      </div>
       <label class="row">Speed <input data-prop="speed" type="range" min="0.125" max="4" step="0.125"><output data-for="speed"></output></label>
       <label class="row">Beat offset <input data-prop="phase" type="range" min="0" max="1" step="0.0625"><output data-for="phase"></output></label>
       <label class="row">Opacity <input data-prop="opacity" type="range" min="0" max="1" step="0.01"><output data-for="opacity"></output></label>

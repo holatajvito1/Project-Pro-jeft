@@ -23,8 +23,12 @@ python3 -m http.server 8000
    - Arrow keys nudge the selected point or shape (Shift = 10 px).
    - The **Alignment grid** effect numbers each corner, which helps with fine-tuning.
 5. Choose an **Effect** for each shape: solid, pulse, strobe, fade, rotating gradient, rainbow, chase stripes, wipe, sparkle, neon outline, or your own **image/video**.
-6. Set the **BPM** or tap **T** to the music. Use **Beat offset** to make effects ripple from one shape to the next.
-7. Turn on **Auto show** for hands-free looks that change every 8 beats, or turn on **Mic** and tick *React to sound* on the shapes that should follow the music.
+6. **Images and videos:** click **＋ Add images / videos** (on a phone this opens your gallery). Tap a thumbnail to put it on the selected shape. If no shape is selected, it gets a new rectangle in the media's proportions. You can also drag files from your computer straight onto a shape.
+   - On a 4-point shape, **Fit → Stretch to corners** bends the picture in perspective. Drag corners 1–4 (top-left, top-right, bottom-right, bottom-left) onto the corners of the real surface, even one seen at an angle.
+   - Other fits: *Fill shape* (crop), *Fit inside*, *Stretch to box*. These work on any shape, including circles and polygons.
+   - Videos loop, with **Play/Pause**, **Restart**, **Speed** and **Sound** controls. Sound plays from the editor only, so it isn't doubled, and the output window stays in time with the editor.
+7. Set the **BPM** or tap **T** to the music. Use **Beat offset** to make effects ripple from one shape to the next.
+8. Turn on **Auto show** for hands-free looks that change every 8 beats, or turn on **Mic** and tick *React to sound* on the shapes that should follow the music.
 
 With only one display (a mirrored projector), use **Perform (H)** to hide the editor and go fullscreen.
 
