@@ -1,0 +1,90 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Projector Mapper</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<canvas id="stage"></canvas>
+
+<div id="ui">
+  <header id="topbar">
+    <div class="brand">◆ Projector Mapper</div>
+    <div class="group">
+      <button id="btnOutput" title="Open a separate output window to drag onto the projector">Open output window</button>
+      <button id="btnPerform" title="Hide the editor and go fullscreen (H)">Perform (H)</button>
+    </div>
+    <div class="group">
+      <label>BPM <input id="bpm" type="number" min="20" max="300" step="1" value="120"></label>
+      <button id="btnTap" title="Tap to the beat (T)">Tap (T)</button>
+      <span id="beatDot"></span>
+    </div>
+    <div class="group">
+      <label>Master <input id="master" type="range" min="0" max="1" step="0.01" value="1"></label>
+      <button id="btnBlackout" title="Blackout (B)">Blackout (B)</button>
+      <button id="btnGrid" title="Show a full-frame alignment grid (G)">Test grid (G)</button>
+    </div>
+    <div class="group">
+      <button id="btnAuto" title="Change effects on every shape every 8 beats">Auto show</button>
+      <button id="btnMic" title="Use the microphone to drive shapes marked 'React to sound'">Mic</button>
+    </div>
+    <div class="group">
+      <button id="btnUndo" title="Undo (Ctrl+Z)">Undo</button>
+      <button id="btnSave" title="Download the project as a file">Save</button>
+      <button id="btnLoad" title="Load a project file">Load</button>
+      <input id="fileLoad" type="file" accept=".json,application/json" hidden>
+    </div>
+  </header>
+
+  <nav id="tools">
+    <button data-tool="select" class="active" title="Select / move / edit points (V)">⬚<span>Select</span></button>
+    <button data-tool="poly" title="Polygon: click points, click the first point or press Enter to close (P)">⬠<span>Polygon</span></button>
+    <button data-tool="rect" title="Rectangle: drag (R)">▭<span>Rect</span></button>
+    <button data-tool="circle" title="Circle: drag from the center (C)">◯<span>Circle</span></button>
+  </nav>
+
+  <aside id="panel">
+    <section>
+      <h2>Shapes</h2>
+      <ul id="shapeList"></ul>
+      <p class="hint" id="emptyHint">Pick a tool on the left and draw over the object you're projecting onto.</p>
+    </section>
+    <section id="props" hidden>
+      <h2>Selected shape</h2>
+      <label class="row">Name <input data-prop="name" type="text"></label>
+      <label class="row">Effect <select data-prop="effect" id="effectSelect"></select></label>
+      <div class="row two">
+        <label>Color A <input data-prop="colorA" type="color"></label>
+        <label>Color B <input data-prop="colorB" type="color"></label>
+      </div>
+      <label class="row" id="mediaRow">Media
+        <span class="inline">
+          <select data-prop="mediaId" id="mediaSelect"></select>
+          <button id="btnUpload" title="Add an image or video">+</button>
+        </span>
+      </label>
+      <input id="fileMedia" type="file" accept="image/*,video/*" hidden>
+      <label class="row">Speed <input data-prop="speed" type="range" min="0.125" max="4" step="0.125"><output data-for="speed"></output></label>
+      <label class="row">Beat offset <input data-prop="phase" type="range" min="0" max="1" step="0.0625"><output data-for="phase"></output></label>
+      <label class="row">Opacity <input data-prop="opacity" type="range" min="0" max="1" step="0.01"><output data-for="opacity"></output></label>
+      <label class="row">Soft edge <input data-prop="feather" type="range" min="0" max="40" step="1"><output data-for="feather"></output></label>
+      <label class="check"><input data-prop="audio" type="checkbox"> React to sound (turn on Mic)</label>
+      <div class="buttons">
+        <button id="btnUp" title="Move forward">▲</button>
+        <button id="btnDown" title="Move backward">▼</button>
+        <button id="btnDup" title="Duplicate (Ctrl+D)">Duplicate</button>
+        <button id="btnDel" class="danger" title="Delete (Del)">Delete</button>
+      </div>
+      <p class="hint">Drag the dots to fit the shape to your object. Double-click an edge to add a point; right-click a point to remove it. Arrow keys nudge (Shift = 10×).</p>
+    </section>
+  </aside>
+  <div id="toast"></div>
+</div>
+
+<div id="outputHint">Drag this window onto the projector, then double-click to go fullscreen.</div>
+
+<script src="app.js"></script>
+</body>
+</html>
